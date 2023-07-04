@@ -34,7 +34,8 @@ class PrivateGBDT(TreeBase):
                  min_samples_split=2, min_child_weight=0,  # Regularisation params
                  subsample=1, row_sample_method=None, colsample_bytree=1, colsample_bylevel=1, colsample_bynode=1,  # Sampling params
                  sketch_type="uniform", sketch_eps=0.001, sketch_rounds=float("inf"), bin_type="all", range_multiplier=1, hist_bin=32, categorical_map=None,  # Sketch params
-                 dp_method="", accounting_method="rdp_scaled_improved", epsilon=1, quantile_epsilon=0, gradient_clipping=False, ratio_expo=None, ratio_leaf=None, gau_sigma=None, gub_beta=None, # DP params
+                 dp_method="", accounting_method="rdp_scaled_improved", epsilon=1, quantile_epsilon=0, gradient_clipping=False, # DP params
+                 ratio_hist=None, ratio_selection=None, ratio_leaf=None, # DP params
                  tree_budgets=None, level_budgets=None, gradient_budgets=None, # DP params
                  ignore_split_constraints=False, grad_clip_const=None, # DP params
                  split_method="hist_based", weight_update_method="xgboost", training_method="boosting", batched_update_size=1, # training method params
@@ -42,6 +43,7 @@ class PrivateGBDT(TreeBase):
                  early_stopping=None, es_metric=None, es_threshold=-5, es_window=3, # early stopping
                  track_budget=True, split_method_per_level=None, hist_estimator_method=None, sigma=None, verbose=False, output_train_monitor=False, # macro parms
                  seed_random=None, seed_numpy=None, # reproducility
+                 selection_mechanism = "exponential_mech", 
                  ):
 
         super(PrivateGBDT, self).__init__(min_samples_split=min_samples_split, max_depth=max_depth, task_type=task_type)
@@ -57,6 +59,7 @@ class PrivateGBDT(TreeBase):
         self.weight_update_method = weight_update_method # xgboost vs gbm updates
         self.split_method = split_method # Determines how splits are chosen - hist_based, partially_random, totally_random, hybrid_random
         self.split_method_per_level = split_method_per_level
+        self.selection_mechanism = selection_mechanism
 
         self.feature_interaction_method = feature_interaction_method
         self.feature_interaction_k = feature_interaction_k
@@ -65,10 +68,15 @@ class PrivateGBDT(TreeBase):
 
         if self.split_method in ["hist_based", "partially_random", "totally_random", "node_based", "grad_based", "hyper_tune"]:
             self.split_method_per_level = [self.split_method]*self.max_depth
+        else: 
+            raise ValueError("split_method invalid")
 
         if self.split_method == "hybrid_random" and self.split_method_per_level is None:
                 self.split_method_per_level = ["totally_random"] * self.max_depth # By default just do totally random
-
+        
+        if self.split_method == "grad_based" and selection_mechanism not in ["exponential_mech", "permutate_flip"]:
+            raise ValueError("selection mech is invalid")
+        
         self.hist_estimator_method = hist_estimator_method # one_sided, two_sided, two_sided_averaging
 
         self.epsilon = epsilon        
@@ -117,11 +125,10 @@ class PrivateGBDT(TreeBase):
         self.verbose = verbose
 
         # budget ratio / noise level, only for my account
+        self.ratio_hist = ratio_hist
+        self.ratio_selection = ratio_selection
         self.ratio_leaf = ratio_leaf
-        self.ratio_expo = ratio_expo
-        self.gau_sigma = gau_sigma
-        self.gub_beta = gub_beta
-
+        
         # The delta value of 1e-5 is a placeholder that is updated to 1/n when the dataset is being trained
         if split_method == "grad_based":
             if isinstance(self.loss, SigmoidBinaryCrossEntropyLoss):
@@ -136,7 +143,8 @@ class PrivateGBDT(TreeBase):
                                                           num_trees=self.num_trees, num_features=self.num_features, max_depth=self.max_depth,
                                                           split_method=self.split_method, task_type=self.task_type, 
                                                           sketch_type=self.split_candidate_manager.sketch_type, sketch_rounds=self.split_candidate_manager.sketch_rounds,
-                                                          ratio_leaf=self.ratio_leaf, ratio_expo=self.ratio_expo, gau_sigma=self.gau_sigma, gub_beta=self.gub_beta)
+                                                          ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection, 
+                                                          selection_mechanism=self.selection_mechanism)
         
         else:
             self.privacy_accountant = PrivacyAccountant(accounting_method, epsilon, 1e-5, quantile_epsilon, dp_method,
@@ -372,7 +380,8 @@ class PrivateGBDT(TreeBase):
             self.privacy_accountant.__init__(loss_name=self.loss_name, epsilon=self.epsilon, delta=1 / X.shape[0], dp_method=self.dp_method,
                                              num_trees=self.num_trees, num_features=self.num_features, max_depth=self.max_depth,
                                              split_method=self.split_method, task_type=self.task_type, sketch_type=self.sketch_type,
-                                             ratio_leaf=self.ratio_leaf, ratio_expo=self.ratio_expo, gau_sigma=self.gau_sigma, gub_beta=self.gub_beta,
+                                             ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection,
+                                             selection_mechanism=self.selection_mechanism
                                              )
 
         # Form histogram bin assignments for each feature - this caching saves a lot of time for histogram based gradient aggregation later on
@@ -507,7 +516,7 @@ class PrivateGBDT(TreeBase):
             
             if split_method == "grad_based":
                 # TODO: add gradient histogram to this class
-                cumulative_grads = np.cumsum(self.c_gradient_histogram[feature_i][split_constraints[0]: split_constraints[1]+1])
+                cumulative_grads = np.cumsum(self.gradient_histogram[feature_i][split_constraints[0]: split_constraints[1]+1])
                 cumulative_hess = np.cumsum(self.counts_histogram[feature_i][split_constraints[0]: split_constraints[1]+1])
                 total_grads_cu = cumulative_grads[-1]
                 total_hess_cu = cumulative_hess[-1]
@@ -579,7 +588,11 @@ class PrivateGBDT(TreeBase):
                         current_max_score = split_score
                     elif split_method == "grad_based":
                         # factor 3 comes from bounding sensivitivy
-                        v = split_score + np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
+                        if self.selection_mechanism == "exponential_mech":
+                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.gumbel_beta)
+                        elif self.selection_mechanism == "permutate_flip":
+                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.expo_beta)
+                        v = split_score + score_noise
                         if v > current_max_score:
                             values = [feature_i, 
                                       j, 
@@ -601,6 +614,8 @@ class PrivateGBDT(TreeBase):
             self.hessian_histogram = {}
             self.private_gradient_histogram = {i: np.zeros(len(self.split_candidate_manager.feature_split_candidates[i])+1) for i in features_considering} # place holder
             self.private_hessian_histogram = {i: np.zeros(len(self.split_candidate_manager.feature_split_candidates[i])+1) for i in features_considering}
+            if self.split_method == "grad_based":
+                self.counts_histogram = {}
 
         if current_depth == 0 and len(self.trees) == 0:
             self.root_hessian_histogram = {i: np.zeros(len(self.split_candidate_manager.feature_split_candidates[i])+1) for i in features_considering}
@@ -610,6 +625,9 @@ class PrivateGBDT(TreeBase):
             digitized = self.feature_bin[i][split_index]
             self.gradient_histogram[i] = np.array(histogram1d(digitized, bins=num_bins, range=[0, num_bins+0.1], weights=grads)) # Fast C histogram implementation
             self.hessian_histogram[i] = np.array(histogram1d(digitized, bins=num_bins, range=[0, num_bins+0.1], weights=hess))
+            if self.split_method == "grad_based":
+                self.counts_histogram[i] = np.array(histogram1d(digitized, bins=num_bins, range=[0, num_bins+0.1], weights=np.ones_like(hess)))
+
 
             if self.dp_method != "":
                 if adaptive_hessian:
@@ -621,58 +639,18 @@ class PrivateGBDT(TreeBase):
                                                                                               noise_size=num_bins, 
                                                                                               adaptive_hessian=True)
                 else:
-                    # also works for grad_based with adaptive_hessian==False
                     self.private_gradient_histogram[i], self.private_hessian_histogram[i] = self.privacy_accountant._add_dp_noise(self.gradient_histogram[i], 
                                                                                                                                   self.hessian_histogram[i],
                                                                                                                                   depth=current_depth,
                                                                                                                                   feature=i, 
                                                                                                                                   histogram_row=True, 
-                                                                                                                                  noise_size=num_bins)
+                                                                                                                                  noise_size=num_bins,
+                                                                                                                                  adaptive_hessian=False)
             
         if self.dp_method == "":
             self.private_gradient_histogram, self.private_hessian_histogram = self.gradient_histogram, self.hessian_histogram
     
-
-    def _form_private_counts_histogram(self, grads, hess, features_considering, split_index, current_depth, adaptive_hessian=False):
-        """
-        generate private and non-private histograms for dradients and counts
-        """
-        counts_weights = np.ones_like(hess)
-
-        if current_depth == 0: 
-            self.c_gradient_histogram = {}
-            self.counts_histogram = {}
-            self.private_c_gradient_histogram = {i: np.zeros(len(self.split_candidate_manager.feature_split_candidates[i])+1) for i in features_considering}
-            self.private_counts_histogram = {i: np.zeros(len(self.split_candidate_manager.feature_split_candidates[i])+1) for i in features_considering}
-
-        if current_depth == 0 and len(self.trees) == 0:
-            self.root_counts_histogram = {i: np.zeros(len(self.split_candidate_manager.feature_split_candidates[i])+1) for i in features_considering}
-
-        for i in features_considering:
-            num_bins = len(self.split_candidate_manager.feature_split_candidates[i])+1
-            digitized = self.feature_bin[i][split_index]
-            self.c_gradient_histogram[i] = np.array(histogram1d(digitized, bins=num_bins, range=[0, num_bins+0.1], weights=grads)) # Fast C histogram implementation
-            self.counts_histogram[i] = np.array(histogram1d(digitized, bins=num_bins, range=[0, num_bins+0.1], weights=counts_weights)) # Fast C histogram implementation
-
-            if self.dp_method != "":
-                # if adaptive_hessian:
-                #     raise NotImplementedError("count hist for adahess not implemented")
-                #     _, self.root_counts_histogram[i] = self.privacy_accountant._add_dp_noise(self.gradient_histogram[i], self.hessian_histogram[i],
-                #                                                            depth=self.max_depth-1,
-                #                                                            feature=i, histogram_row=True, noise_size=num_bins, adaptive_hessian=True)
-                # else:
-                    self.private_c_gradient_histogram[i], self.private_counts_histogram[i] = self.privacy_accountant._add_dp_noise_counts(self.c_gradient_histogram[i], 
-                                                                                                                                        self.counts_histogram[i],
-                                                                                                                                        depth=current_depth,
-                                                                                                                                        feature=i, 
-                                                                                                                                        histogram_row=True, 
-                                                                                                                                        noise_size=num_bins)
-
-        if self.dp_method == "":
-            self.private_c_gradient_histogram = self.c_gradient_histogram
-            self.private_counts_histogram = self.counts_histogram
-
-
+    
     def _get_node_id(self, depth, node_num):
         return str(depth) + "_" + str(node_num)
 
@@ -740,18 +718,16 @@ class PrivateGBDT(TreeBase):
                 node_total_hess = sum([i.sum() for i in self.private_hessian_histogram.values()])/len(self.private_hessian_histogram.values())
             
             elif split_method == "grad_based":
-                # generate (grad_hist, hess_hist) and (c_grad_hist, counts_hist)
+                # generate (grad_hist, hess_hist, counts_hist)
 
                 if self.split_candidate_manager.sketch_type == "adaptive_hessian" and len(self.trees) < self.split_candidate_manager.sketch_rounds:
                     self._form_private_gradient_histogram(grads, hess, features_considering, split_index, current_depth, adaptive_hessian=True) # Adaptive hess test
-                    self._form_private_counts_histogram(grads, hess, features_considering, split_index, current_depth, adaptive_hessian=True) # TODO: check this!!
                 else:
                     # Form privatised grads,hess
                     self._form_private_gradient_histogram(grads, hess, features_considering, split_index, current_depth, adaptive_hessian=False)
-                    self._form_private_counts_histogram(grads, hess, features_considering, split_index, current_depth, adaptive_hessian=False) # TODO: check this!!
                 
                 # this two are PUBLIC
-                node_total_grads = sum([i.sum() for i in self.c_gradient_histogram.values()])/len(self.c_gradient_histogram.values())
+                node_total_grads = sum([i.sum() for i in self.gradient_histogram.values()])/len(self.gradient_histogram.values())
                 node_total_hess = sum([i.sum() for i in self.counts_histogram.values()])/len(self.counts_histogram.values())
             
             # for early stopping
@@ -760,7 +736,7 @@ class PrivateGBDT(TreeBase):
         
         # For nodes with depth > 0!
         # If the spliting conditions are satisfied then split the current node otherwise stop and make it a leaf
-        # TODO: for "grad_based", we split once node_total_hess(public) >= 0, this has priacy leakage. Fix later!! -> fixed below. SHould we consider CORNER CASE?
+        # For "totally_random", "grad_based", always split until reach max depth.
         if (split_method in ["totally_random", "grad_based"] or node_total_hess >= self.min_child_weight) and (current_depth < self.max_depth):
             if split_method == "hist_based" and current_depth > 0:
                 self._form_private_gradient_histogram(grads, hess, features_considering, split_index, current_depth) # Form privatised grads,hess
@@ -779,7 +755,7 @@ class PrivateGBDT(TreeBase):
                 # Find best (feature, split) candidates for each feature
                 split_data = self._calculate_feature_split(features_considering, split_index, current_depth, node_gain, node_total_grads, node_total_hess, grads, hess, split_constraints)
             elif split_method == "grad_based":
-                raw_node_total_grads = sum([i.sum() for i in self.c_gradient_histogram.values()])/len(self.c_gradient_histogram.values())
+                raw_node_total_grads = sum([i.sum() for i in self.gradient_histogram.values()])/len(self.gradient_histogram.values())
                 raw_node_total_hess = sum([i.sum() for i in self.counts_histogram.values()])/len(self.counts_histogram.values())
                 # node_gain = self._calculate_gain(raw_node_total_grads, raw_node_total_hess) # !!! node_gain should benoised
                 node_gain = 0 # since we use eqn 3 in https://arxiv.org/pdf/1911.04209.pdf
