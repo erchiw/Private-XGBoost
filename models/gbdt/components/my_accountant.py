@@ -1,6 +1,6 @@
 import numpy as np
 
-from autodp.mechanism_zoo import ExactGaussianMechanism, ExponentialMechanism, PureDP_Mechanism
+from autodp.mechanism_zoo import ExactGaussianMechanism, ExponentialMechanism, PureDP_Mechanism, Renyi_hp_tune_Mechanism
 from autodp.calibrator_zoo import ana_gaussian_calibrator, generalized_eps_delta_calibrator
 from autodp.transformer_zoo import Composition
 from scipy.optimize import bisect
@@ -72,7 +72,7 @@ class MyPrivacyAccountant():
         self.sketch_type = sketch_type
 
         # get noise multiplier
-        if self.split_method == "adaptive_hessian":
+        if self.sketch_type == "adaptive_hessian":
             self.sigma_hist = self.gaussian_var(mech_type="hist")
         
         self.sigma_leaf = self.gaussian_var(mech_type="leaf")
@@ -88,7 +88,7 @@ class MyPrivacyAccountant():
 
         if self.selection_mechanism == "exponential_mech":
             selection_node = ExponentialMechanism(selection_eps, BR_off=False, name="expo_node")
-        elif self.selection_mechanism == "permute_and_flip":
+        elif self.selection_mechanism == "permutate_flip":
             selection_node = PureDP_Mechanism(selection_eps, name="permute_flip_node")
         else:
             raise NotImplementedError("not imp")
@@ -226,18 +226,23 @@ class MyPrivacyAccountant():
         :param depth: Current level in the tree
         :return: Perturbed sum of gradients and hessians
         """
-        hist_gaussian_std = self.sigma_hist * self.hess_hist_sensitivity
+        if self.sketch_type == "adaptive_hessian":
+            hist_gaussian_std = self.sigma_hist * self.hess_hist_sensitivity
+        elif self.sketch_type == "uniform":
+            pass
+
         leaf_gaussian_std = self.sigma_leaf * np.sqrt(self.grad_sensitivity**2 + self.hess_sensitivity**2) # homogeneous gaussian. Try hetergeneous later?
 
-        perturbed_gradients = grad_sum # could be array or scalar
-        perturbed_hessians = hess_sum
-
-        if histogram_row and self.dp_method == "gaussian_cdp":
-            perturbed_gradients = None
-            perturbed_hessians = hess_sum + np.random.normal(0, hist_gaussian_std, size=noise_size)
-        elif self.dp_method == "gaussian_cdp":
-            perturbed_gradients += np.random.normal(0, leaf_gaussian_std, size=None)
-            perturbed_hessians += np.random.normal(0, leaf_gaussian_std, size=None)
+        if histogram_row and self.dp_method == "gaussian_cdp": # for hist
+            if self.sketch_type == "adaptive_hessian":
+                perturbed_gradients = None
+                perturbed_hessians = hess_sum + np.random.normal(0, hist_gaussian_std, size=noise_size) # still we use Hess hist get by BCE loss though using l2 loss hessian for node selection
+            else:
+                perturbed_gradients = None
+                perturbed_hessians = None
+        elif self.dp_method == "gaussian_cdp": # for leaf
+            perturbed_gradients = grad_sum + np.random.normal(0, leaf_gaussian_std, size=None)
+            perturbed_hessians = hess_sum + np.random.normal(0, leaf_gaussian_std, size=None)
 
         return perturbed_gradients, perturbed_hessians
     

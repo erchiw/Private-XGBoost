@@ -74,7 +74,7 @@ class PrivateGBDT(TreeBase):
         if self.split_method == "hybrid_random" and self.split_method_per_level is None:
                 self.split_method_per_level = ["totally_random"] * self.max_depth # By default just do totally random
         
-        if self.split_method == "grad_based" and selection_mechanism not in ["exponential_mech", "permutate_flip"]:
+        if self.split_method == "grad_based" and selection_mechanism not in ["exponential_mech", "permutate_flip", "hyper_tune"]:
             raise ValueError("selection mech is invalid")
         
         self.hist_estimator_method = hist_estimator_method # one_sided, two_sided, two_sided_averaging
@@ -129,6 +129,7 @@ class PrivateGBDT(TreeBase):
         self.ratio_selection = ratio_selection
         self.ratio_leaf = ratio_leaf
         
+        # print(self.ratio_hist, self.ratio_selection, self.ratio_leaf)
         # The delta value of 1e-5 is a placeholder that is updated to 1/n when the dataset is being trained
         if split_method == "grad_based":
             if isinstance(self.loss, SigmoidBinaryCrossEntropyLoss):
@@ -139,12 +140,14 @@ class PrivateGBDT(TreeBase):
                 raise NotImplementedError("loss not implemented for grad_based")
      
             self.loss_name = loss_name
-            self.privacy_accountant = MyPrivacyAccountant(lossname=loss_name, epsilon=epsilon, delta=1e-5, dp_method=dp_method, 
+            self.privacy_accountant = MyPrivacyAccountant(loss_name=loss_name, epsilon=epsilon, delta=1e-5, dp_method=dp_method, 
                                                           num_trees=self.num_trees, num_features=self.num_features, max_depth=self.max_depth,
                                                           split_method=self.split_method, task_type=self.task_type, 
                                                           sketch_type=self.split_candidate_manager.sketch_type, sketch_rounds=self.split_candidate_manager.sketch_rounds,
                                                           ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection, 
                                                           selection_mechanism=self.selection_mechanism)
+            # print("first init")
+            #print(self.privacy_accountant.sigma_hist)
         
         else:
             self.privacy_accountant = PrivacyAccountant(accounting_method, epsilon, 1e-5, quantile_epsilon, dp_method,
@@ -383,6 +386,8 @@ class PrivateGBDT(TreeBase):
                                              ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection,
                                              selection_mechanism=self.selection_mechanism
                                              )
+            # print("reinit-finished")
+            #print(self.privacy_accountant.sigma_hist)
 
         # Form histogram bin assignments for each feature - this caching saves a lot of time for histogram based gradient aggregation later on
         for i in range(0, self.num_features):
@@ -396,6 +401,8 @@ class PrivateGBDT(TreeBase):
         previous_rounds_features = None
 
         for i in range(0, self.num_trees):
+            #print("current tree")
+            #print(i)
             self.train_monitor.node_count = -1 # Reset node count for new trees
 
             if self.split_candidate_manager.sketch_each_tree:
@@ -425,6 +432,7 @@ class PrivateGBDT(TreeBase):
                 ## once per tree, but use left/right_split_index to select points at each node
                 grads, hess = self._compute_grad_hessian_with_samples(y, self.loss.predict(self.train_monitor.y_weights)) # Compute raw grads,hess
                 self.train_monitor.gradient_info = [(grads, hess)] # Append to gradient_info, at each node this is retrieved and privatised with DP to calculate feature scores etc
+                #print(grads)
 
             tree = self._build_tree(features, row_sample, None, None,
                                     split_constraints=split_constraints, col_tree_sample=col_tree_sample, col_level_sample=col_level_sample, row_ids=np.arange(0,X.shape[0]))
@@ -522,10 +530,10 @@ class PrivateGBDT(TreeBase):
                 total_hess_cu = cumulative_hess[-1]
 
                 # private grad and hess for leaf release
-                pri_cumulative_grads = np.cumsum(self.private_gradient_histogram[feature_i][split_constraints[0]: split_constraints[1]+1])
-                pri_cumulative_hess = np.cumsum(self.private_hessian_histogram[feature_i][split_constraints[0]: split_constraints[1]+1])
-                pri_total_grads_cu = pri_cumulative_grads[-1]
-                pri_total_hess_cu = pri_cumulative_hess[-1]
+                # pri_cumulative_grads = np.cumsum(self.private_gradient_histogram[feature_i][split_constraints[0]: split_constraints[1]+1])
+                # pri_cumulative_hess = np.cumsum(self.private_hessian_histogram[feature_i][split_constraints[0]: split_constraints[1]+1])
+                # pri_total_grads_cu = pri_cumulative_grads[-1]
+                # pri_total_hess_cu = pri_cumulative_hess[-1]
             
             for j, threshold in enumerate(self.split_candidate_manager.feature_split_candidates[feature_i]):
                 if (split_method == "partially_random" or split_method == "totally_random") and j != chosen_split:
@@ -563,10 +571,10 @@ class PrivateGBDT(TreeBase):
                         split_score = self._calculate_split_score(self._calculate_gain(left_grads_sum, left_hess_sum), self._calculate_gain(right_grads_sum, right_hess_sum), total_gain)
 
                         # noised grad and hess for leaf weight
-                        pri_left_grads_sum = pri_cumulative_grads[j-(split_constraints[0])]
-                        pri_left_hess_sum = pri_cumulative_hess[j-(split_constraints[0])]
-                        pri_right_grads_sum = pri_total_grads_cu - pri_left_grads_sum
-                        pri_right_hess_sum = pri_total_hess_cu - pri_left_hess_sum
+                        # pri_left_grads_sum = pri_cumulative_grads[j-(split_constraints[0])]
+                        # pri_left_hess_sum = pri_cumulative_hess[j-(split_constraints[0])]
+                        # pri_right_grads_sum = pri_total_grads_cu - pri_left_grads_sum
+                        # pri_right_hess_sum = pri_total_hess_cu - pri_left_hess_sum
 
                     elif split_method == "node_based" or split_method == "partially_random":
                         new_split_index = self.X[split_index, feature_i] <= threshold
@@ -589,17 +597,18 @@ class PrivateGBDT(TreeBase):
                     elif split_method == "grad_based":
                         # factor 3 comes from bounding sensivitivy
                         if self.selection_mechanism == "exponential_mech":
-                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.gumbel_beta)
+                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
                         elif self.selection_mechanism == "permutate_flip":
-                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.expo_beta)
+                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
                         v = split_score + score_noise
                         if v > current_max_score:
                             values = [feature_i, 
                                       j, 
                                       threshold, 
                                       split_score, 
-                                      None, 
-                                      (pri_left_grads_sum, pri_left_hess_sum, pri_right_grads_sum, pri_right_hess_sum)] # though pri_left_sum is sum over noised hist, it doesn't effect grad_based
+                                      None,
+                                      (None, None, None, None)] 
+                                      #(pri_left_grads_sum, pri_left_hess_sum, pri_right_grads_sum, pri_right_hess_sum)] # though pri_left_sum is sum over noised hist, it doesn't effect grad_based
                             current_max_score = v
         return values
     
@@ -638,6 +647,7 @@ class PrivateGBDT(TreeBase):
                                                                                               histogram_row=True, 
                                                                                               noise_size=num_bins, 
                                                                                               adaptive_hessian=True)
+                    #print("success")
                 else:
                     self.private_gradient_histogram[i], self.private_hessian_histogram[i] = self.privacy_accountant._add_dp_noise(self.gradient_histogram[i], 
                                                                                                                                   self.hessian_histogram[i],
@@ -745,7 +755,6 @@ class PrivateGBDT(TreeBase):
                     node_total_hess = sum([i.sum() for i in self.private_hessian_histogram.values()])/len(self.private_hessian_histogram.values())
             elif split_method == "grad_based" and current_depth > 0:
                 self._form_private_gradient_histogram(grads, hess, features_considering, split_index, current_depth) # Form privatised grads,hess
-                self._form_private_counts_histogram(grads, hess, features_considering, split_index, current_depth)
             else:
                 pass
                 
@@ -815,8 +824,8 @@ class PrivateGBDT(TreeBase):
             size = self.num_classes if self.num_classes > 2 else None
             raw_grads_sum = raw_grads_sum.sum()
             raw_hess_sum = raw_hess_sum.sum()
-            node_total_grads = raw_grads_sum + np.random.normal(0, self.privacy_accountant.leaf_sensitivity * self.privacy_accountant.sigma, size=size)
-            node_total_hess = raw_hess_sum + np.random.normal(0, self.privacy_accountant.leaf_sensitivity * self.privacy_accountant.sigma, size=size)
+            node_total_grads = raw_grads_sum + np.random.normal(0, self.privacy_accountant.leaf_sensitivity * self.privacy_accountant.sigma_leaf, size=size)
+            node_total_hess = raw_hess_sum + np.random.normal(0, self.privacy_accountant.leaf_sensitivity * self.privacy_accountant.sigma_leaf, size=size)
         
         else:
             pass
