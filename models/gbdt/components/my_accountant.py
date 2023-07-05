@@ -1,6 +1,6 @@
 import numpy as np
 
-from autodp.mechanism_zoo import ExactGaussianMechanism, ExponentialMechanism, PureDP_Mechanism, Renyi_hp_tune_Mechanism
+from autodp.mechanism_zoo import ExactGaussianMechanism, ExponentialMechanism, PureDP_Mechanism #, Renyi_hp_tune_Mechanism
 from autodp.calibrator_zoo import ana_gaussian_calibrator, generalized_eps_delta_calibrator
 from autodp.transformer_zoo import Composition
 from scipy.optimize import bisect
@@ -13,7 +13,7 @@ class MyPrivacyAccountant():
     def __init__(self, loss_name, epsilon, delta, dp_method, # DP params
                  num_trees, num_features, max_depth, split_method, task_type="classification", sketch_type="uniform", sketch_rounds=np.Inf,# Tree params
                  ratio_hist=None, ratio_selection=None, ratio_leaf=None, # budget ratio for different mechanism
-                 selection_mechanism="exponential_mech", 
+                 selection_mechanism="exponential_mech"
                  ):
 
         # sanity check and bounds for CE loss and sigmoid least square
@@ -68,6 +68,9 @@ class MyPrivacyAccountant():
         self.count_sensitivity = 1 if split_method == "grad_based" else None
         self.leaf_sensitivity = np.sqrt(self.grad_sensitivity**2 + self.hess_sensitivity**2)
 
+        if split_method == "hyper_tune":
+            self.hyper_sensitivity = np.sqrt(self.grad_sensitivity**2 + self.hess_sensitivity**2)
+
         self.loss_name = loss_name
         self.sketch_type = sketch_type
 
@@ -77,21 +80,29 @@ class MyPrivacyAccountant():
         
         self.sigma_leaf = self.gaussian_var(mech_type="leaf")
         
-        if selection_mechanism == "exponential_mech":
-            self.beta = self.gumbel_beta()
-        elif selection_mechanism == "permutate_flip":
-            self.beta = self.expo_beta()
-
+        if split_method == "grad_based":
+            if selection_mechanism == "exponential_mech":
+                self.beta = self.gumbel_beta()
+            elif selection_mechanism == "permutate_flip":
+                self.beta = self.expo_beta()
+        elif split_method == "hyper_tune":
+            self.sigma_score = self.gaussian_var(mech_type="renyi_hyper")
+        else:
+            raise ValueError("split_method didn't implemented")
+        
 
     def create_tree_mechanism(self, gau_sigma_hist, selection_eps, gau_sigma_leaf):
         compose = Composition()
 
-        if self.selection_mechanism == "exponential_mech":
-            selection_node = ExponentialMechanism(selection_eps, BR_off=False, name="expo_node")
-        elif self.selection_mechanism == "permutate_flip":
-            selection_node = PureDP_Mechanism(selection_eps, name="permute_flip_node")
+        if self.split_method == "grad_based":
+            if self.selection_mechanism == "exponential_mech":
+                selection_node = ExponentialMechanism(selection_eps, BR_off=False, name="expo_node")
+            elif self.selection_mechanism == "permutate_flip":
+                selection_node = PureDP_Mechanism(selection_eps, name="permute_flip_node")
+        elif self.split_method == "hyper_tune":
+            selection_node = PureDP_Mechanism(selection_eps, name="hyper_selection") # non-optimal, change later
         else:
-            raise NotImplementedError("not imp")
+            raise NotImplementedError("sk not imp")
         
         gau_leaf = ExactGaussianMechanism(gau_sigma_leaf, name="gau_leaf")
         tree_mech_no_proposal = compose([selection_node, gau_leaf], [self.max_depth, 1]) 
@@ -211,7 +222,8 @@ class MyPrivacyAccountant():
             sigma = self.get_gau_sigma(self.calibrated_epsilon * self.ratio_per_leaf, self.delta)
         elif mech_type == "hist":
             sigma = self.get_gau_sigma(self.calibrated_epsilon * self.ratio_per_hist, self.delta)
-            
+        elif mech_type == "renyi_hyper": # this is for releasing AdaSSP style score for splititing selection 
+            sigma = self.get_gau_sigma(self.calibrated_epsilon * self.ratio_per_selection/2, self.delta) ## TODO: Renyi_hp
         return sigma
     
 
