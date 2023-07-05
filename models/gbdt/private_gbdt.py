@@ -30,7 +30,7 @@ class PrivateGBDT(TreeBase):
     def __init__(self, num_trees=2, max_depth=6, # Default tree params
                  num_features=None,
                  task_type="classification", loss=SigmoidBinaryCrossEntropyLoss(),
-                 reg_lambda=1, reg_alpha=0, reg_gamma=1e-7, reg_eta=0.3, reg_delta=2, smoothing_lambda=1,# Regularisation params
+                 reg_lambda=1, reg_alpha=0, reg_gamma=1e-7, reg_eta=0.3, reg_delta=2, reg_delta_grad=0, smoothing_lambda=1,# Regularisation params
                  min_samples_split=2, min_child_weight=0,  # Regularisation params
                  subsample=1, row_sample_method=None, colsample_bytree=1, colsample_bylevel=1, colsample_bynode=1,  # Sampling params
                  sketch_type="uniform", sketch_eps=0.001, sketch_rounds=float("inf"), bin_type="all", range_multiplier=1, hist_bin=32, categorical_map=None,  # Sketch params
@@ -43,7 +43,8 @@ class PrivateGBDT(TreeBase):
                  early_stopping=None, es_metric=None, es_threshold=-5, es_window=3, # early stopping
                  track_budget=True, split_method_per_level=None, hist_estimator_method=None, sigma=None, verbose=False, output_train_monitor=False, # macro parms
                  seed_random=None, seed_numpy=None, # reproducility
-                 selection_mechanism = "exponential_mech", hyper_tune_coverage=0.9
+                 selection_mechanism = "exponential_mech", hyper_tune_coverage=0.9,
+
                  ):
 
         super(PrivateGBDT, self).__init__(min_samples_split=min_samples_split, max_depth=max_depth, task_type=task_type)
@@ -113,6 +114,7 @@ class PrivateGBDT(TreeBase):
         self.reg_lambda = reg_lambda  # L2 regularisation on weights
         self.reg_alpha = reg_alpha  # L1 regularisation on gradients
         self.reg_gamma = reg_gamma  # Equivalent to the min impurity score needed to split a node further (or just leave it as a leaf)
+        self.reg_delta_grad = reg_delta_grad
         self.smoothing_lambda = smoothing_lambda # for denominator smoothing of renyi hyper score releasing
 
         self.min_child_weight = min_child_weight  # Minimum sum of instance weight (hessian) needed in a child, if the sum of hessians less than this then the node is not split further
@@ -289,7 +291,8 @@ class PrivateGBDT(TreeBase):
         # if total_hess < self.min_hess:
         #     total_hess = 0
         return _calculate_weight(total_grads, total_hess, self.reg_alpha, self.reg_delta, self.reg_lambda)
-        
+    
+
     def _calculate_gain(self, total_grads, total_hess):
 
         """
@@ -300,6 +303,14 @@ class PrivateGBDT(TreeBase):
         :return: Gain score
         """
         return _calculate_gain(total_grads, total_hess, self.reg_alpha, self.reg_delta, self.reg_lambda)
+    
+    
+    def _calculate_gain_grad_based(self, total_grads, total_hess):
+        """
+        Calculate gain for releasing splitting score for grad_based 
+        """
+        return _calculate_gain(total_grads, total_hess, self.reg_alpha, self.reg_delta_grad, self.smoothing_lambda)
+
       
       
     def _calculate_split_score(self, left_gain, right_gain, total_gain):
@@ -605,7 +616,9 @@ class PrivateGBDT(TreeBase):
 
                         total_gain = 0 # since we use eqn 3 as score function in https://arxiv.org/pdf/1911.04209.pdf
 
-                        split_score = self._calculate_split_score(self._calculate_gain(left_grads_sum, left_hess_sum), self._calculate_gain(right_grads_sum, right_hess_sum), total_gain)
+                        split_score = self._calculate_split_score(self._calculate_gain_grad_based(left_grads_sum, left_hess_sum), 
+                                                                  self._calculate_gain_grad_based(right_grads_sum, right_hess_sum), 
+                                                                  total_gain)
                     
                     elif split_method == "hyper_tune":
                         if threshold_indicator in chosen_thresholds:
