@@ -1,4 +1,5 @@
 import numba
+import numpy as np
 import math
 
 @numba.jit(nopython=True)
@@ -52,3 +53,17 @@ def _calculate_gain(total_grads, total_hess, reg_alpha, reg_delta, reg_lambda):
         return -(2 * total_grads * weight + (total_hess + reg_lambda) * weight ** 2) + reg_alpha * abs(weight)  # This is an L1-regularised clipped gain calculation
     else:
         return -weight * con  # G^2/H + lambda, with possible L1 regularisation and delta clipping on G
+
+# not faster than numpy
+# @numba.jit(nopython=True)
+# def _calculate_hyper_tune_score(left_sum_grad, left_sum_hessian, right_sum_grad, right_sum_hessian, smoothing_lambda):
+#     left_num = left_sum_grad**2
+#     right_num = right_sum_grad**2
+        
+#     left_denum = np.clip(left_sum_hessian + smoothing_lambda, a_min=smoothing_lambda, a_max=np.Inf)
+#     right_denum = np.clip(right_sum_hessian + smoothing_lambda, a_min=smoothing_lambda, a_max=np.Inf)
+        
+#     score = left_num / left_denum + right_num / right_denum
+        
+#     return score
+    

@@ -11,7 +11,7 @@ from fast_histogram import histogram1d
 
 from federated_gbdt.models.base.tree_base import TreeBase
 from federated_gbdt.models.base.tree_node import DecisionNode
-from federated_gbdt.models.base.jit_functions import _calculate_gain, _calculate_weight, _L1_clip  # numba funcs
+from federated_gbdt.models.base.jit_functions import _calculate_gain, _calculate_weight, _L1_clip
 
 from federated_gbdt.models.gbdt.components.split_candidate_manager import SplitCandidateManager
 from federated_gbdt.models.gbdt.components.index_sampler import IndexSampler
@@ -316,11 +316,16 @@ class PrivateGBDT(TreeBase):
     def _calculate_split_score(self, left_gain, right_gain, total_gain):
         return 0.5 * (left_gain + right_gain - total_gain)
     
-    @staticmethod
-    def _calculate_hp_tune_score(left_sum_grad, left_sum_hessian, right_sum_grad, right_sum_hessian, smoothing_lambda):
-        score_left = left_sum_grad**2 / np.clip(left_sum_hessian + smoothing_lambda, a_min=smoothing_lambda, a_max=np.Inf)
-        score_right = right_sum_grad**2 / np.clip(right_sum_hessian + smoothing_lambda, a_min=smoothing_lambda, a_max=np.Inf)
-        return score_left + score_right
+    
+    def _calculate_hyper_tune_score(self, left_sum_grad, left_sum_hessian, right_sum_grad, right_sum_hessian, smoothing_lambda):  
+        left_num = left_sum_grad**2
+        right_num = right_sum_grad**2    
+        left_denum = np.clip(left_sum_hessian + smoothing_lambda, a_min=smoothing_lambda, a_max=np.Inf)
+        right_denum = np.clip(right_sum_hessian + smoothing_lambda, a_min=smoothing_lambda, a_max=np.Inf)
+        
+        score = left_num / left_denum + right_num / right_denum
+        return score
+    
 
 
     def _calculate_leaf_weight(self, total_grads, total_hess):
@@ -622,27 +627,25 @@ class PrivateGBDT(TreeBase):
                     
                     elif split_method == "hyper_tune":
                         if threshold_indicator in chosen_thresholds:
-                            max_split_score_this_threshold = -np.Inf
+                            num_runs = sum(chosen_thresholds == threshold_indicator)
                             
-                            # running selected mechanisms selected times
-                            num_runs = sum(chosen_thresholds == threshold)
-                            for _ in range(num_runs):
-                                left_grads_sum = cumulative_grads[j-(split_constraints[0])] 
-                                left_hess_sum = cumulative_hess[j-(split_constraints[0])]
-                                right_grads_sum = total_grads_cu - left_grads_sum
-                                right_hess_sum = total_hess_cu - left_hess_sum
-
-                                noised_left_grads_sum = left_grads_sum + np.random.normal(loc=0, scale=self.privacy_accountant.hyper_sensitivity*self.privacy_accountant.sigma_score, size=None)
-                                noised_left_hess_sum = left_hess_sum + np.random.normal(loc=0, scale=self.privacy_accountant.hyper_sensitivity*self.privacy_accountant.sigma_score, size=None)
-                                noised_right_grads_sum = right_grads_sum + np.random.normal(loc=0, scale=self.privacy_accountant.hyper_sensitivity*self.privacy_accountant.sigma_score, size=None)
-                                noised_right_hess_sum = right_hess_sum + np.random.normal(loc=0, scale=self.privacy_accountant.hyper_sensitivity*self.privacy_accountant.sigma_score, size=None)
+                            # vectorization to speed up
+                            left_grads_sum = np.repeat(cumulative_grads[j-(split_constraints[0])], num_runs)
+                            left_hess_sum = np.repeat(cumulative_hess[j-(split_constraints[0])], num_runs)
+                            right_grads_sum = total_grads_cu - left_grads_sum
+                            right_hess_sum = total_hess_cu - left_hess_sum
+                            
+                            noise = np.random.normal(loc=0, scale=self.privacy_accountant.hyper_sensitivity*self.privacy_accountant.sigma_score, size=((4, num_runs)))         
+                            
+                            noised_left_grads_sum = left_grads_sum + noise[0,:]
+                            noised_left_hess_sum = left_hess_sum + noise[1,:]
+                            noised_right_grads_sum = right_grads_sum + noise[2,:]
+                            noised_right_hess_sum = right_hess_sum + noise[3,:]
                                 
-                                split_score = self._calculate_hp_tune_score(noised_left_grads_sum, noised_left_hess_sum, 
-                                                                            noised_right_grads_sum, noised_right_hess_sum, 
-                                                                            self.smoothing_lambda)
-                                
-                                if split_score > max_split_score_this_threshold:
-                                    max_split_score_this_threshold = split_score
+                            split_score = max(self._calculate_hyper_tune_score(noised_left_grads_sum, noised_left_hess_sum, 
+                                                                               noised_right_grads_sum, noised_right_hess_sum, 
+                                                                               self.smoothing_lambda))
+                            
                             indicator_run = True
                         else:
                             indicator_run = False
@@ -679,9 +682,9 @@ class PrivateGBDT(TreeBase):
                                     # though pri_left_sum is sum over noised hist, it doesn't effect grad_based
                             current_max_score = v
                     elif split_method == "hyper_tune" and indicator_run:
-                        if max_split_score_this_threshold > current_max_score:
-                            values = [feature_i, j, threshold, max_split_score_this_threshold, None, (None, None, None, None)]
-                            current_max_score = max_split_score_this_threshold
+                        if split_score > current_max_score:
+                            values = [feature_i, j, threshold, split_score, None, (None, None, None, None)]
+                            current_max_score = split_score
         return values
     
     
