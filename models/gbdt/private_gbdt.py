@@ -675,7 +675,7 @@ class PrivateGBDT(TreeBase):
                         if self.selection_mechanism == "exponential_mech":
                             score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
                         elif self.selection_mechanism == "permutate_flip":
-                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
+                            score_noise = np.random.exponential(scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
                         v = split_score + score_noise
                         if v > current_max_score:
                             values = [feature_i, j, threshold, split_score, None, (None, None, None, None)] 
