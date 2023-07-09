@@ -592,6 +592,7 @@ class PrivateGBDT(TreeBase):
                 
                 
             # vectorization for grad_based
+            # recheck
             
             if split_method == "grad_based":            
                 
