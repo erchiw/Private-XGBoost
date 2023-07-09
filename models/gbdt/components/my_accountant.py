@@ -13,7 +13,8 @@ class MyPrivacyAccountant():
     def __init__(self, loss_name, epsilon, delta, dp_method, # DP params
                  num_trees, num_features, max_depth, split_method, task_type="classification", sketch_type="uniform", sketch_rounds=np.Inf,# Tree params
                  ratio_hist=None, ratio_selection=None, ratio_leaf=None, # budget ratio for different mechanism
-                 selection_mechanism="exponential_mech"
+                 selection_mechanism="exponential_mech",
+                 feature_interaction_method=None, feature_interaction_k=None
                  ):
 
         # sanity check and bounds for CE loss and sigmoid least square
@@ -39,10 +40,14 @@ class MyPrivacyAccountant():
         self.calibrated_epsilon = None
         self.delta = delta
         self.is_calibrated = False
-
+        
+        
         self.num_trees = num_trees
         self.max_depth = max_depth
         self.split_method = split_method
+        self.feature_interaction_method = feature_interaction_method
+        self.feature_interaction_k = feature_interaction_k
+        
 
         if sketch_rounds == float("Inf"):
             self.sketch_rounds = num_trees
@@ -64,7 +69,13 @@ class MyPrivacyAccountant():
         
         self.grad_sensitivity = max(self.max_gradient, abs(self.min_gradient))
         self.hess_sensitivity = max(self.max_hess, abs(self.min_hess))
-        self.hess_hist_sensitivity = np.sqrt(self.num_features)*self.hess_sensitivity     
+        
+        if self.feature_interaction_method == "cyclical":
+            if self.feature_interaction_k == 1:
+                self.hess_hist_sensitivity = np.sqrt(1)*self.hess_sensitivity     
+        else: 
+            self.hess_hist_sensitivity = np.sqrt(self.num_features)*self.hess_sensitivity     
+            
         self.count_sensitivity = 1 if split_method == "grad_based" else None
         self.leaf_sensitivity = np.sqrt(self.grad_sensitivity**2 + self.hess_sensitivity**2)
 

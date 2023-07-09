@@ -44,7 +44,6 @@ class PrivateGBDT(TreeBase):
                  track_budget=True, split_method_per_level=None, hist_estimator_method=None, sigma=None, verbose=False, output_train_monitor=False, # macro parms
                  seed_random=None, seed_numpy=None, # reproducility
                  selection_mechanism = "exponential_mech", hyper_tune_coverage=0.9,
-
                  ):
 
         super(PrivateGBDT, self).__init__(min_samples_split=min_samples_split, max_depth=max_depth, task_type=task_type)
@@ -75,11 +74,15 @@ class PrivateGBDT(TreeBase):
         if self.split_method == "hybrid_random" and self.split_method_per_level is None:
                 self.split_method_per_level = ["totally_random"] * self.max_depth # By default just do totally random
         
-        if self.split_method == "grad_based" and selection_mechanism not in ["exponential_mech", "permutate_flip"]:
+        if self.split_method == "grad_based" and selection_mechanism not in ["exponential_mech", "permutate_flip", "public_cheat"]:
             raise ValueError("selection mech is invalid")
         
         if self.split_method == "hyper_tune":
-            expected_run_num = np.floor(num_features * hist_bin * hyper_tune_coverage)
+            if self.feature_interaction_method == "cyclical" and self.feature_interaction_k == 1:
+                expected_run_num = np.floor(hist_bin * hyper_tune_coverage)
+            else:
+                expected_run_num = np.floor(num_features * hist_bin * hyper_tune_coverage)
+            
             p = self._calibrate_hyper_p(expected_run_num)
             if p[1].converged:
                 self.hyper_p = p[1].root # p for numpy.random.logseries
@@ -158,10 +161,10 @@ class PrivateGBDT(TreeBase):
                                                           split_method=self.split_method, task_type=self.task_type, 
                                                           sketch_type=self.split_candidate_manager.sketch_type, sketch_rounds=self.split_candidate_manager.sketch_rounds,
                                                           ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection, 
-                                                          selection_mechanism=self.selection_mechanism)
-            # print("first init")
-            #print(self.privacy_accountant.sigma_hist)
-        
+                                                          selection_mechanism=self.selection_mechanism,
+                                                          feature_interaction_method=self.feature_interaction_method, 
+                                                          feature_interaction_k=self.feature_interaction_k)
+            
         else:
             self.privacy_accountant = PrivacyAccountant(accounting_method, epsilon, 1e-5, quantile_epsilon, dp_method,
                                                         self.num_trees, self.max_depth, self.split_method, self.training_method, self.weight_update_method,
@@ -309,7 +312,8 @@ class PrivateGBDT(TreeBase):
         """
         Calculate gain for releasing splitting score for grad_based 
         """
-        return _calculate_gain(total_grads, total_hess, self.reg_alpha, self.reg_delta_grad, self.smoothing_lambda)
+        score = total_grads**2 / (total_hess + self.smoothing_lambda) 
+        return score
 
       
       
@@ -384,24 +388,23 @@ class PrivateGBDT(TreeBase):
         self.train_monitor.batched_weights = np.zeros(self.X.shape[0])
 
         if "cyclical" in self.feature_interaction_method and (self.split_candidate_manager.sketch_type == "adaptive_hessian" or self.full_ebm):
-            if self.split_method in ["grad_based", "hyper_tune"]:
-                raise NotImplementedError("not implemented for cyclical")
+            if self.split_method not in ["grad_based", "hyper_tune"]:
 
-            if self.full_ebm:
-                self.num_trees = self.num_trees * X.shape[1]
-            self.split_candidate_manager.sketch_rounds = min(self.num_trees, self.split_candidate_manager.sketch_rounds*self.num_features)
+                if self.full_ebm:
+                    self.num_trees = self.num_trees * X.shape[1]
+                self.split_candidate_manager.sketch_rounds = min(self.num_trees, self.split_candidate_manager.sketch_rounds*self.num_features)
 
-            # recompute budget allocation
-            self.privacy_accountant.__init__(self.privacy_accountant.accounting_method, epsilon=self.privacy_accountant.epsilon, delta=self.privacy_accountant.delta,
-                                                    quantile_epsilon=self.privacy_accountant.quantile_epsilon, dp_method=self.dp_method,
-                                                    num_trees=self.num_trees, max_depth=self.max_depth, split_method=self.split_method, training_method=self.training_method, weight_update_method=self.weight_update_method,
-                                                    split_method_per_level=self.split_method_per_level,
-                                                    feature_interaction_method=self.feature_interaction_method, feature_interaction_k=self.feature_interaction_k,
-                                                    sample_method = self.index_sampler.row_sample_method, subsample=self.index_sampler.subsample,
-                                                    sketch_type=self.split_candidate_manager.sketch_type, sketch_rounds=self.split_candidate_manager.sketch_rounds,
-                                                    task_type=self.task_type, sigma=self.privacy_accountant.sigma,
-                                                    grad_clip_const=self.privacy_accountant.grad_clip_const, gradient_clipping=self.privacy_accountant.gradient_clipping,
-                                                    verbose=self.verbose,)
+                # recompute budget allocation
+                self.privacy_accountant.__init__(self.privacy_accountant.accounting_method, epsilon=self.privacy_accountant.epsilon, delta=self.privacy_accountant.delta,
+                                                        quantile_epsilon=self.privacy_accountant.quantile_epsilon, dp_method=self.dp_method,
+                                                        num_trees=self.num_trees, max_depth=self.max_depth, split_method=self.split_method, training_method=self.training_method, weight_update_method=self.weight_update_method,
+                                                        split_method_per_level=self.split_method_per_level,
+                                                        feature_interaction_method=self.feature_interaction_method, feature_interaction_k=self.feature_interaction_k,
+                                                        sample_method = self.index_sampler.row_sample_method, subsample=self.index_sampler.subsample,
+                                                        sketch_type=self.split_candidate_manager.sketch_type, sketch_rounds=self.split_candidate_manager.sketch_rounds,
+                                                        task_type=self.task_type, sigma=self.privacy_accountant.sigma,
+                                                        grad_clip_const=self.privacy_accountant.grad_clip_const, gradient_clipping=self.privacy_accountant.gradient_clipping,
+                                                        verbose=self.verbose,)
 
         if self.batched_update_size < 1:
             self.batched_update_size = int(self.batched_update_size * self.num_trees)
@@ -428,7 +431,9 @@ class PrivateGBDT(TreeBase):
                                              num_trees=self.num_trees, num_features=self.num_features, max_depth=self.max_depth,
                                              split_method=self.split_method, task_type=self.task_type, sketch_type=self.sketch_type,
                                              ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection,
-                                             selection_mechanism=self.selection_mechanism
+                                             selection_mechanism=self.selection_mechanism,
+                                             feature_interaction_method=self.feature_interaction_method,
+                                             feature_interaction_k=self.feature_interaction_k
                                              )
             # print("reinit-finished")
             #print(self.privacy_accountant.sigma_hist)
@@ -584,107 +589,114 @@ class PrivateGBDT(TreeBase):
                 cumulative_hess = np.cumsum(self.hessian_histogram[feature_i][split_constraints[0]: split_constraints[1]+1]) # use hessian
                 total_grads_cu = cumulative_grads[-1]
                 total_hess_cu = cumulative_hess[-1]
+                
+                
+            # vectorization for grad_based
             
-            
-            for j, threshold in enumerate(self.split_candidate_manager.feature_split_candidates[feature_i]):
+            if split_method == "grad_based":            
+                
+                j_array= []
+                for j, threshold in enumerate(self.split_candidate_manager.feature_split_candidates[feature_i]):
+                    if split_constraints[0] <= j <= split_constraints[1] or self.ignore_split_constraints:
+                        j_array.append(j)
+                j_array = np.array(j_array)
+                
+                left_grads_sum = cumulative_grads[j_array - (split_constraints[0])]
+                left_hess_sum = cumulative_hess[j_array - (split_constraints[0])]
+                right_grads_sum = total_grads_cu - left_grads_sum
+                right_hess_sum = total_hess_cu - left_hess_sum
 
-                if (split_method == "partially_random" or split_method == "totally_random") and j != chosen_split:
-                    continue
+                score_array = self._calculate_gain_grad_based(left_grads_sum, left_hess_sum) + self._calculate_gain_grad_based(right_grads_sum, right_hess_sum)
+                
+                if self.selection_mechanism == "exponential_mech":
+                    score_array += np.random.gumbel(loc=0, scale = 3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta, size=len(score_array))
+                elif self.selection_mechanism == "permutate_flip":
+                    score_array += np.random.exponential(scale = 3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta, size=len(score_array))
+                
+                v = max(score_array)
+                if len(score_array) != len(j_array):
+                    raise ValueError("score_array doesn't has same length as j_array")
+                
+                if v > current_max_score:
+                    j_star = j_array[np.argmax(score_array)]
+                    threshold = self.split_candidate_manager.feature_split_candidates[feature_i][j_star]
+                    values = [feature_i, j_star, threshold, v, None, (None, None, None, None)] 
+                            # though pri_left_sum is sum over noised hist, it doesn't effect grad_based
+                    current_max_score = v
+            else:
+                for j, threshold in enumerate(self.split_candidate_manager.feature_split_candidates[feature_i]):
 
-                if split_constraints[0] <= j <= split_constraints[1] or self.ignore_split_constraints: # Only add split if it isn't one-sided (based on public knowledge of previous splits)
+                    if (split_method == "partially_random" or split_method == "totally_random") and j != chosen_split:
+                        continue
 
-                    # Calculate impurity score of proposed split
-                    if split_method == "hist_based":
-                        left_grads_sum = cumulative_grads[j-(split_constraints[0])]
-                        left_hess_sum = cumulative_hess[j-(split_constraints[0])]
+                    if split_constraints[0] <= j <= split_constraints[1] or self.ignore_split_constraints: # Only add split if it isn't one-sided (based on public knowledge of previous splits)
+                        # Calculate impurity score of proposed split
+                        if split_method == "hist_based":
+                            left_grads_sum = cumulative_grads[j-(split_constraints[0])]
+                            left_hess_sum = cumulative_hess[j-(split_constraints[0])]
 
-                        if self.hist_estimator_method == "one-sided":
+                            if self.hist_estimator_method == "one-sided":
+                                right_grads_sum = total_grads - left_grads_sum
+                                right_hess_sum = total_hess - left_hess_sum
+                            else:
+                                right_grads_sum = total_grads_cu - left_grads_sum
+                                right_hess_sum = total_hess_cu - left_hess_sum
+
+                            if self.hist_estimator_method == "two_sided":
+                                total_grads = self.private_gradient_histogram[feature_i][split_constraints[0]: split_constraints[1]].sum()
+                                total_hess = self.private_hessian_histogram[feature_i][split_constraints[0]: split_constraints[1]].sum()
+                                total_gain = self._calculate_gain(total_grads, total_hess)
+
+                            split_score = self._calculate_split_score(self._calculate_gain(left_grads_sum, left_hess_sum), self._calculate_gain(right_grads_sum, right_hess_sum), total_gain)
+                        elif split_method == "hyper_tune":
+                            if threshold_indicator in chosen_thresholds:
+                                num_runs = sum(chosen_thresholds == threshold_indicator)
+                                
+                                # vectorization to speed up
+                                left_grads_sum = np.repeat(cumulative_grads[j-(split_constraints[0])], num_runs)
+                                left_hess_sum = np.repeat(cumulative_hess[j-(split_constraints[0])], num_runs)
+                                right_grads_sum = total_grads_cu - left_grads_sum
+                                right_hess_sum = total_hess_cu - left_hess_sum
+                                
+                                noise = np.random.normal(loc=0, scale=self.privacy_accountant.hyper_sensitivity*self.privacy_accountant.sigma_score, size=((4, num_runs)))         
+                                
+                                noised_left_grads_sum = left_grads_sum + noise[0,:]
+                                noised_left_hess_sum = left_hess_sum + noise[1,:]
+                                noised_right_grads_sum = right_grads_sum + noise[2,:]
+                                noised_right_hess_sum = right_hess_sum + noise[3,:]
+                                    
+                                split_score = max(self._calculate_hyper_tune_score(noised_left_grads_sum, noised_left_hess_sum, 
+                                                                                noised_right_grads_sum, noised_right_hess_sum, 
+                                                                                self.smoothing_lambda))
+                                
+                                indicator_run = True
+                            else:
+                                indicator_run = False
+                            threshold_indicator += 1
+                        elif split_method == "node_based" or split_method == "partially_random":
+                            new_split_index = self.X[split_index, feature_i] <= threshold
+                            left_grads_sum, left_hess_sum = self.privacy_accountant._add_dp_noise(grads[new_split_index].sum(), 
+                                                                                                hess[new_split_index].sum(), 
+                                                                                                current_depth, 
+                                                                                                feature=feature_i, 
+                                                                                                num_obs=len(new_split_index))
                             right_grads_sum = total_grads - left_grads_sum
                             right_hess_sum = total_hess - left_hess_sum
-                        else:
-                            right_grads_sum = total_grads_cu - left_grads_sum
-                            right_hess_sum = total_hess_cu - left_hess_sum
+                            split_score = self._calculate_split_score(self._calculate_gain(left_grads_sum, left_hess_sum), self._calculate_gain(right_grads_sum, right_hess_sum), total_gain)
+                        else: # In the case of totally random no score are computed
+                            split_score = float("inf")
+                            left_grads_sum, left_hess_sum, right_grads_sum, right_hess_sum = [float("inf")]*4
 
-                        if self.hist_estimator_method == "two_sided":
-                            total_grads = self.private_gradient_histogram[feature_i][split_constraints[0]: split_constraints[1]].sum()
-                            total_hess = self.private_hessian_histogram[feature_i][split_constraints[0]: split_constraints[1]].sum()
-                            total_gain = self._calculate_gain(total_grads, total_hess)
 
-                        split_score = self._calculate_split_score(self._calculate_gain(left_grads_sum, left_hess_sum), self._calculate_gain(right_grads_sum, right_hess_sum), total_gain)
-                    
-                    elif split_method == "grad_based":
-                        left_grads_sum = cumulative_grads[j-(split_constraints[0])]
-                        left_hess_sum = cumulative_hess[j-(split_constraints[0])]
-
-                        right_grads_sum = total_grads_cu - left_grads_sum
-                        right_hess_sum = total_hess_cu - left_hess_sum
-
-                        total_gain = 0 # since we use eqn 3 as score function in https://arxiv.org/pdf/1911.04209.pdf
-
-                        split_score = self._calculate_split_score(self._calculate_gain_grad_based(left_grads_sum, left_hess_sum), 
-                                                                  self._calculate_gain_grad_based(right_grads_sum, right_hess_sum), 
-                                                                  total_gain)
-                    
-                    elif split_method == "hyper_tune":
-                        if threshold_indicator in chosen_thresholds:
-                            num_runs = sum(chosen_thresholds == threshold_indicator)
-                            
-                            # vectorization to speed up
-                            left_grads_sum = np.repeat(cumulative_grads[j-(split_constraints[0])], num_runs)
-                            left_hess_sum = np.repeat(cumulative_hess[j-(split_constraints[0])], num_runs)
-                            right_grads_sum = total_grads_cu - left_grads_sum
-                            right_hess_sum = total_hess_cu - left_hess_sum
-                            
-                            noise = np.random.normal(loc=0, scale=self.privacy_accountant.hyper_sensitivity*self.privacy_accountant.sigma_score, size=((4, num_runs)))         
-                            
-                            noised_left_grads_sum = left_grads_sum + noise[0,:]
-                            noised_left_hess_sum = left_hess_sum + noise[1,:]
-                            noised_right_grads_sum = right_grads_sum + noise[2,:]
-                            noised_right_hess_sum = right_hess_sum + noise[3,:]
-                                
-                            split_score = max(self._calculate_hyper_tune_score(noised_left_grads_sum, noised_left_hess_sum, 
-                                                                               noised_right_grads_sum, noised_right_hess_sum, 
-                                                                               self.smoothing_lambda))
-                            
-                            indicator_run = True
-                        else:
-                            indicator_run = False
-                        threshold_indicator += 1
-                    
-                    elif split_method == "node_based" or split_method == "partially_random":
-                        new_split_index = self.X[split_index, feature_i] <= threshold
-                        left_grads_sum, left_hess_sum = self.privacy_accountant._add_dp_noise(grads[new_split_index].sum(), 
-                                                                                              hess[new_split_index].sum(), 
-                                                                                              current_depth, 
-                                                                                              feature=feature_i, 
-                                                                                              num_obs=len(new_split_index))
-                        right_grads_sum = total_grads - left_grads_sum
-                        right_hess_sum = total_hess - left_hess_sum
-                        split_score = self._calculate_split_score(self._calculate_gain(left_grads_sum, left_hess_sum), self._calculate_gain(right_grads_sum, right_hess_sum), total_gain)
-                    else: # In the case of totally random no score are computed
-                        split_score = float("inf")
-                        left_grads_sum, left_hess_sum, right_grads_sum, right_hess_sum = [float("inf")]*4
-
-                    # update best split
-                    if split_method not in ["grad_based", "hyper_tune"] and split_score > current_max_score:
-                        # Divide X and y depending on if the feature value of X at index feature_i meets the threshold
-                        values = [feature_i, j, threshold, split_score, None, (left_grads_sum, left_hess_sum, right_grads_sum, right_hess_sum)]
-                        current_max_score = split_score
-                    elif split_method == "grad_based":
-                        # factor 3 comes from bounding sensivitivy
-                        if self.selection_mechanism == "exponential_mech":
-                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
-                        elif self.selection_mechanism == "permutate_flip":
-                            score_noise = np.random.exponential(scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
-                        v = split_score + score_noise
-                        if v > current_max_score:
-                            values = [feature_i, j, threshold, split_score, None, (None, None, None, None)] 
-                                    # though pri_left_sum is sum over noised hist, it doesn't effect grad_based
-                            current_max_score = v
-                    elif split_method == "hyper_tune" and indicator_run:
-                        if split_score > current_max_score:
-                            values = [feature_i, j, threshold, split_score, None, (None, None, None, None)]
+                        # update best split
+                        if split_method not in ["grad_based", "hyper_tune"] and split_score > current_max_score:
+                            # Divide X and y depending on if the feature value of X at index feature_i meets the threshold
+                            values = [feature_i, j, threshold, split_score, None, (left_grads_sum, left_hess_sum, right_grads_sum, right_hess_sum)]
                             current_max_score = split_score
+                        elif split_method == "hyper_tune" and indicator_run:
+                            if split_score > current_max_score:
+                                values = [feature_i, j, threshold, split_score, None, (None, None, None, None)]
+                                current_max_score = split_score
         return values
     
     
