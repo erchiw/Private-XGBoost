@@ -309,7 +309,7 @@ class PrivateGBDT(TreeBase):
         """
         Calculate gain for releasing splitting score for grad_based 
         """
-        return _calculate_gain(total_grads, total_hess, self.reg_alpha, self.reg_delta_grad, self.smoothing_lambda)
+        return _calculate_gain(total_grads, total_hess, self.reg_alpha, self.reg_delta_grad, self.reg_lambda)
 
       
       
@@ -672,7 +672,7 @@ class PrivateGBDT(TreeBase):
                         if self.selection_mechanism == "exponential_mech":
                             score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
                         elif self.selection_mechanism == "permutate_flip":
-                            score_noise = np.random.gumbel(loc=0, scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
+                            score_noise = np.random.exponential(scale=3 * self.privacy_accountant.grad_sensitivity * self.privacy_accountant.beta)
                         v = split_score + score_noise
                         if v > current_max_score:
                             values = [feature_i, j, threshold, split_score, None, (None, None, None, None)] 
