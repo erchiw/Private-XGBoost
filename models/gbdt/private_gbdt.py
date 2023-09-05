@@ -163,7 +163,9 @@ class PrivateGBDT(TreeBase):
                                                           ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection, 
                                                           selection_mechanism=self.selection_mechanism,
                                                           feature_interaction_method=self.feature_interaction_method, 
-                                                          feature_interaction_k=self.feature_interaction_k)
+                                                          feature_interaction_k=self.feature_interaction_k,
+                                                          hyper_tnb_eta=0,
+                                                          hyper_tnb_gamma=1 - self.hyper_p)
             
         else:
             self.privacy_accountant = PrivacyAccountant(accounting_method, epsilon, 1e-5, quantile_epsilon, dp_method,
@@ -433,7 +435,9 @@ class PrivateGBDT(TreeBase):
                                              ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection,
                                              selection_mechanism=self.selection_mechanism,
                                              feature_interaction_method=self.feature_interaction_method,
-                                             feature_interaction_k=self.feature_interaction_k
+                                             feature_interaction_k=self.feature_interaction_k,
+                                             hyper_tnb_eta=0,
+                                             hyper_tnb_gamma=1-self.hyper_p
                                              )
             # print("reinit-finished")
             #print(self.privacy_accountant.sigma_hist)
