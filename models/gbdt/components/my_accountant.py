@@ -5,11 +5,6 @@ from autodp.calibrator_zoo import ana_gaussian_calibrator, generalized_eps_delta
 from autodp.transformer_zoo import Composition
 from scipy.optimize import bisect
 
-
-git config --global user.email "erchiw@gmail.com"
-  git config --global user.name "erchiw"
-
-
 class MyPrivacyAccountant():
     """
     This class is only used for grad_based
