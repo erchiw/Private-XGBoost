@@ -6,6 +6,10 @@ from autodp.transformer_zoo import Composition
 from scipy.optimize import bisect
 
 
+git config --global user.email "erchiw@gmail.com"
+  git config --global user.name "erchiw"
+
+
 class MyPrivacyAccountant():
     """
     This class is only used for grad_based
@@ -13,7 +17,8 @@ class MyPrivacyAccountant():
     def __init__(self, loss_name, epsilon, delta, dp_method, # DP params
                  num_trees, num_features, max_depth, split_method, task_type="classification", sketch_type="uniform", sketch_rounds=np.Inf,# Tree params
                  ratio_hist=None, ratio_selection=None, ratio_leaf=None, # budget ratio for different mechanism
-                 selection_mechanism="exponential_mech"
+                 selection_mechanism="exponential_mech",
+                 feature_interaction_method="", feature_interaction_k=None
                  ):
 
         # sanity check and bounds for CE loss and sigmoid least square
@@ -43,16 +48,21 @@ class MyPrivacyAccountant():
         self.num_trees = num_trees
         self.max_depth = max_depth
         self.split_method = split_method
+                
+        self.loss_name = loss_name
+        self.sketch_type = sketch_type
 
         if sketch_rounds == float("Inf"):
             self.sketch_rounds = num_trees
         else:
             self.sketch_rounds = sketch_rounds
-
+            
+        self.feature_interaction_method = feature_interaction_method
+        self.feature_interaction_k = feature_interaction_k
        
         if (ratio_hist is not None) and (ratio_selection is not None) and (ratio_leaf is not None):
             """
-            For adaptive hessian: release a tensor of hess hist each tree, # queries = sketch_round, but sens = sart(#feature) * sens(hess)
+            For adaptive hessian: release a tensor of hess hist each tree, # queries = sketch_round, but sens = sqrt(#feature) * sens(hess)
             For selection: # query = #tree * #depth
             For leaf: # query = #tree
             """
@@ -64,16 +74,22 @@ class MyPrivacyAccountant():
         
         self.grad_sensitivity = max(self.max_gradient, abs(self.min_gradient))
         self.hess_sensitivity = max(self.max_hess, abs(self.min_hess))
-        self.hess_hist_sensitivity = np.sqrt(self.num_features)*self.hess_sensitivity     
+        
+        if sketch_type == "adaptive_hessian":
+            if self.feature_interaction_method == "":
+                self.hess_hist_sensitivity = np.sqrt(self.num_features)*self.hess_sensitivity
+            elif self.feature_interaction_method == "cyclical":
+                self.hess_hist_sensitivity = np.sqrt(self.feature_interaction_k)*self.hess_sensitivity
+            else:
+                raise NotImplementedError("feature_interaction_method not implemented!!!")
+             
         self.count_sensitivity = 1 if split_method == "grad_based" else None
         self.leaf_sensitivity = np.sqrt(self.grad_sensitivity**2 + self.hess_sensitivity**2)
 
         if split_method == "hyper_tune":
             self.hyper_sensitivity = np.sqrt(self.grad_sensitivity**2 + self.hess_sensitivity**2)
 
-        self.loss_name = loss_name
-        self.sketch_type = sketch_type
-
+      
         # get noise multiplier
         if self.sketch_type == "adaptive_hessian":
             self.sigma_hist = self.gaussian_var(mech_type="hist")

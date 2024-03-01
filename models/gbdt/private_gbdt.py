@@ -158,7 +158,9 @@ class PrivateGBDT(TreeBase):
                                                           split_method=self.split_method, task_type=self.task_type, 
                                                           sketch_type=self.split_candidate_manager.sketch_type, sketch_rounds=self.split_candidate_manager.sketch_rounds,
                                                           ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection, 
-                                                          selection_mechanism=self.selection_mechanism)
+                                                          selection_mechanism=self.selection_mechanism,
+                                                          feature_interaction_method=self.feature_interaction_method,
+                                                          feature_interaction_k=self.feature_interaction_k)
             # print("first init")
             #print(self.privacy_accountant.sigma_hist)
         
@@ -379,24 +381,27 @@ class PrivateGBDT(TreeBase):
         self.train_monitor.batched_weights = np.zeros(self.X.shape[0])
 
         if "cyclical" in self.feature_interaction_method and (self.split_candidate_manager.sketch_type == "adaptive_hessian" or self.full_ebm):
-            if self.split_method in ["grad_based", "hyper_tune"]:
-                raise NotImplementedError("not implemented for cyclical")
-
-            if self.full_ebm:
-                self.num_trees = self.num_trees * X.shape[1]
-            self.split_candidate_manager.sketch_rounds = min(self.num_trees, self.split_candidate_manager.sketch_rounds*self.num_features)
-
-            # recompute budget allocation
-            self.privacy_accountant.__init__(self.privacy_accountant.accounting_method, epsilon=self.privacy_accountant.epsilon, delta=self.privacy_accountant.delta,
-                                                    quantile_epsilon=self.privacy_accountant.quantile_epsilon, dp_method=self.dp_method,
-                                                    num_trees=self.num_trees, max_depth=self.max_depth, split_method=self.split_method, training_method=self.training_method, weight_update_method=self.weight_update_method,
-                                                    split_method_per_level=self.split_method_per_level,
-                                                    feature_interaction_method=self.feature_interaction_method, feature_interaction_k=self.feature_interaction_k,
-                                                    sample_method = self.index_sampler.row_sample_method, subsample=self.index_sampler.subsample,
-                                                    sketch_type=self.split_candidate_manager.sketch_type, sketch_rounds=self.split_candidate_manager.sketch_rounds,
-                                                    task_type=self.task_type, sigma=self.privacy_accountant.sigma,
-                                                    grad_clip_const=self.privacy_accountant.grad_clip_const, gradient_clipping=self.privacy_accountant.gradient_clipping,
-                                                    verbose=self.verbose,)
+            
+            if self.split_method not in ["grad_based", "hyper_tune"]:
+                if self.full_ebm:
+                    self.num_trees = self.num_trees * X.shape[1]
+                self.split_candidate_manager.sketch_rounds = min(self.num_trees, self.split_candidate_manager.sketch_rounds*self.num_features)
+                # recompute budget allocation
+                self.privacy_accountant.__init__(self.privacy_accountant.accounting_method, epsilon=self.privacy_accountant.epsilon, delta=self.privacy_accountant.delta,
+                                                        quantile_epsilon=self.privacy_accountant.quantile_epsilon, dp_method=self.dp_method,
+                                                        num_trees=self.num_trees, max_depth=self.max_depth, split_method=self.split_method, training_method=self.training_method, weight_update_method=self.weight_update_method,
+                                                        split_method_per_level=self.split_method_per_level,
+                                                        feature_interaction_method=self.feature_interaction_method, feature_interaction_k=self.feature_interaction_k,
+                                                        sample_method = self.index_sampler.row_sample_method, subsample=self.index_sampler.subsample,
+                                                        sketch_type=self.split_candidate_manager.sketch_type, sketch_rounds=self.split_candidate_manager.sketch_rounds,
+                                                        task_type=self.task_type, sigma=self.privacy_accountant.sigma,
+                                                        grad_clip_const=self.privacy_accountant.grad_clip_const, gradient_clipping=self.privacy_accountant.gradient_clipping,
+                                                        verbose=self.verbose,)
+            elif self.split_method in ["grad_based", "hyper_tune"]:
+                if self.split_method == "hyper_tune":
+                    raise NotImplementedError("not implemented for cyclical")
+            else:
+                raise NotImplementedError("split_method not implemented")
 
         if self.batched_update_size < 1:
             self.batched_update_size = int(self.batched_update_size * self.num_trees)
@@ -423,7 +428,9 @@ class PrivateGBDT(TreeBase):
                                              num_trees=self.num_trees, num_features=self.num_features, max_depth=self.max_depth,
                                              split_method=self.split_method, task_type=self.task_type, sketch_type=self.sketch_type,
                                              ratio_hist=self.ratio_hist, ratio_leaf=self.ratio_leaf, ratio_selection=self.ratio_selection,
-                                             selection_mechanism=self.selection_mechanism
+                                             selection_mechanism=self.selection_mechanism,
+                                             feature_interaction_method=self.feature_interaction_method,
+                                             feature_interaction_k=self.feature_interaction_k
                                              )
             # print("reinit-finished")
             #print(self.privacy_accountant.sigma_hist)
