@@ -1,4 +1,4 @@
-### Structure:
+# Differential Private XGBoost
+This repository contains code for differential private https://openreview.net/pdf?id=bCynxWndWY
 
-* ``core`` - Contains helper functions and structures for XGBoost such as quantile sketches, loss functions and pre-processing methods
-* ``models`` - Contains main GBDT models
+The implementation is based on https://github.com/Samuel-Maddock/federated-boosted-dp-trees
